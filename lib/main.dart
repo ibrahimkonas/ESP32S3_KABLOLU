@@ -44,7 +44,28 @@ class _AnaPanelState extends State<AnaPanel> {
   bool _targetReached = false;
   bool _stoppedForError = false;
   bool _pendingReset = false;
-  double basinc = 0, vakum = 0, hiz = 850, bant = 1000, anaP = 500, ragP = 400;
+  final List<Map<String, String>> _pinDump = const [
+    {'code': 'STEP', 'pin': 'GPIO12', 'desc': 'Stepper adim'},
+    {'code': 'DIR', 'pin': 'GPIO13', 'desc': 'Stepper yon'},
+    {'code': 'APS 0.1', 'pin': 'GPIO8', 'desc': 'Ana piston asagi'},
+    {'code': 'APS 0.2', 'pin': 'GPIO9', 'desc': 'Ana piston yukari'},
+    {'code': 'RPS 0.1', 'pin': 'GPIO10', 'desc': 'Ragle piston asagi'},
+    {'code': 'RPS 0.2', 'pin': 'GPIO11', 'desc': 'Ragle piston yukari'},
+    {'code': 'XL 0.1', 'pin': 'GPIO17', 'desc': 'X sol limit'},
+    {'code': 'XR 0.1', 'pin': 'GPIO18', 'desc': 'X sag limit'},
+    {'code': 'RXS', 'pin': 'GPIO21', 'desc': 'Ragle X konum sensoru'},
+    {'code': 'UBS 0.1', 'pin': 'GPIO16', 'desc': 'Urun band sensoru'},
+    {'code': 'TB 0.1', 'pin': 'GPIO26', 'desc': 'Transfer band motor surucu'},
+    {'code': 'Basinc ADC', 'pin': 'GPIO6', 'desc': 'Hava basinc sensoru'},
+    {'code': 'Vakum ADC', 'pin': 'GPIO4', 'desc': 'Vakum sensoru'},
+  ];
+  double basinc = 0,
+      vakum = 0,
+      hiz = 850,
+      bant = 1000,
+      anaP = 500,
+      ragP = 400,
+      xBand = 0;
   bool isOnline = false, isOto = true;
   String durum = "BEKLENIYOR";
   String _errorMessage = '';
@@ -144,10 +165,11 @@ class _AnaPanelState extends State<AnaPanel> {
           } else {
             sayac = d['sayac'] ?? 0;
           }
-          hiz = (d['hiz'] ?? 850).toDouble();
-          bant = (d['bant'] ?? 1000).toDouble();
-          anaP = (d['anaP'] ?? 500).toDouble();
-          ragP = (d['ragP'] ?? 400).toDouble();
+            hiz = (d['hiz'] ?? 850).toDouble();
+            bant = (d['bant'] ?? 1000).toDouble();
+            anaP = (d['anaP'] ?? 500).toDouble();
+            ragP = (d['ragP'] ?? 400).toDouble();
+            xBand = (d['xBand'] ?? d['xb'] ?? xBand).toDouble();
           durum = d['durum'] ?? "HAZIR";
           isOto = d['isOto'] ?? true;
           basinc = ((d['basinc'] ?? 0) / 4095) * 10;
@@ -155,27 +177,36 @@ class _AnaPanelState extends State<AnaPanel> {
           isOnline = true;
           _pressureOk = (d['pressure'] ?? 1) == 1;
           _vacuumOk = (d['vacuum'] ?? 1) == 1;
-          _errorMessage = '';
           String? detectedError;
+          String sensorCode = '';
           if (d['error_msg'] != null && (d['error_msg'] as String).isNotEmpty) {
             detectedError = (d['error_msg'] as String).toUpperCase();
           } else {
             if (basinc < 2.0) {
               detectedError = 'HAVA BASINCI YOK';
+              sensorCode = 'HBK_SENSOR (GPIO6)';
             } else if (vakum < 1.5) {
               detectedError = 'VAKUM DÜŞÜK';
+              sensorCode = 'VK_SENSOR (GPIO4)';
             } else if ((d['durum'] ?? '').toString().toLowerCase().contains(
                   'ana piston',
                 )) {
               detectedError = 'ANA PİSTON AŞAĞIYA İNMEDİ';
+              sensorCode = 'APS (GPIO8/9)';
             } else if ((d['durum'] ?? '').toString().toLowerCase().contains(
                   'ragle',
                 )) {
               detectedError = 'RAGLE PİSTON YERİNE ULAŞMADI';
+              sensorCode = 'RPS (GPIO10/11)';
             }
           }
           if (detectedError != null && detectedError.isNotEmpty) {
-            _errorMessage = detectedError;
+            if (sensorCode.isNotEmpty) {
+              detectedError = '$detectedError (Sensör: $sensorCode)';
+            }
+            if (_errorMessage != detectedError) {
+              _errorMessage = detectedError;
+            }
             if (_events.isEmpty || _events.last.reason != detectedError) {
               _events.add(
                 MachineEvent(
@@ -343,6 +374,29 @@ class _AnaPanelState extends State<AnaPanel> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _saveSettings() async {
+    final params = {
+      'bant': bant.toInt(),
+      'ap': anaP.toInt(),
+      'rp': ragP.toInt(),
+      'xb': xBand.toInt(),
+    };
+    final query = params.entries.map((e) => '${e.key}=${e.value}').join('&');
+    try {
+      await _gonder('set?$query');
+      await _verileriGetir();
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ayarlar kaydedildi')),
+        );
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ayar kaydedilemedi: $e')),
+        );
+    }
+  }
+
   void _resetError() async {
     String message = 'İstek gönderiliyor...';
     try {
@@ -367,16 +421,30 @@ class _AnaPanelState extends State<AnaPanel> {
   }
 
   Future<void> _setTarget(int v) async {
+    final nt = v < 0 ? 0 : v;
     setState(() {
-      _targetProduction = v;
+      _targetProduction = nt;
       _targetReached = false;
       _stoppedForError = false;
       sayac = 0; // yeni üretim için ekranda sıfırdan başla
       _pendingReset = true; // cihazda sıfırlamayı beklet
     });
-    // Cihaz sayaç sıfırlama isteği: başarısız olursa start öncesi tekrar denenecek
-    await _tryResetCounter();
-    _verileriGetir();
+    try {
+      // hedefi cihaza yaz
+      await _gonder('set?target=$nt');
+      // sayaç sıfırlama denemesi
+      await _tryResetCounter();
+      await _verileriGetir();
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Hedef $nt kaydedildi')),
+        );
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Hedef kaydedilemedi: $e')),
+        );
+    }
   }
 
   void _sifreSorgula() {
@@ -447,6 +515,15 @@ class _AnaPanelState extends State<AnaPanel> {
       padding: EdgeInsets.zero,
       children: [
         _uyariBanner(),
+        if (_errorMessage.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: ElevatedButton.icon(
+              onPressed: _resetError,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Hata Reset'),
+            ),
+          ),
         OperatorPanel(
           sayac: sayac,
           basinc: basinc,
@@ -492,24 +569,88 @@ class _AnaPanelState extends State<AnaPanel> {
       padding: const EdgeInsets.all(16),
       children: [
         ListTile(
-          title: const Text('Ragle Hızı'),
-          subtitle: Text('$hiz'),
-          trailing: _ayarS('Ragle Hizi', hiz, 200, 2000, 'hiz'),
+          title: const Text('Bant Süresi'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              SizedBox(height: 4),
+              Text('Min 100 ms - Max 10000 ms'),
+            ],
+          ),
+          trailing: _ayarS(
+            'Bant Suresi',
+            bant,
+            100,
+            10000,
+            'bant',
+            (nv) => bant = nv,
+            unit: ' ms',
+          ),
         ),
         ListTile(
-          title: const Text('Bant Süresi'),
-          subtitle: Text('$bant'),
-          trailing: _ayarS('Bant Suresi', bant, 100, 5000, 'bant'),
+          title: const Text('X Bandı Mesafesi'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              SizedBox(height: 4),
+              Text('Min 0 mm - Max 1000 mm'),
+            ],
+          ),
+          trailing: _ayarS(
+            'X Bandı Mesafesi',
+            xBand,
+            0,
+            1000,
+            'xb',
+            (nv) => xBand = nv,
+            unit: ' mm',
+          ),
         ),
         ListTile(
           title: const Text('Ana Piston Süresi'),
-          subtitle: Text('$anaP'),
-          trailing: _ayarS('Ana Piston Suresi', anaP, 100, 2000, 'ap'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              SizedBox(height: 4),
+              Text('Min 100 ms - Max 5000 ms'),
+            ],
+          ),
+          trailing:
+              _ayarS(
+            'Ana Piston Suresi',
+            anaP,
+            100,
+            5000,
+            'ap',
+            (nv) => anaP = nv,
+            unit: ' ms',
+          ),
         ),
         ListTile(
           title: const Text('Ragle Piston Süresi'),
-          subtitle: Text('$ragP'),
-          trailing: _ayarS('Ragle Piston Suresi', ragP, 100, 2000, 'rp'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              SizedBox(height: 4),
+              Text('Min 100 ms - Max 5000 ms'),
+            ],
+          ),
+          trailing: _ayarS(
+            'Ragle Piston Suresi',
+            ragP,
+            100,
+            5000,
+            'rp',
+            (nv) => ragP = nv,
+            unit: ' ms',
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16),
+          child: ElevatedButton(
+            onPressed: _saveSettings,
+            child: const Text('Ayarları Kaydet'),
+          ),
         ),
         const Divider(),
         ListTile(
@@ -519,45 +660,56 @@ class _AnaPanelState extends State<AnaPanel> {
             child: const Text('Değiştir'),
           ),
         ),
-        ListTile(
-          title: const Text('Sayaç Sıfırla'),
-          trailing: ElevatedButton(
-            onPressed: _performFactoryReset,
-            child: const Text('Sıfırla'),
-          ),
-        ),
         const Divider(),
         Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8.0),
-          child: TechnicianMenuExtra(deviceIp: ip),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => PinDumpPage(pinDump: _pinDump),
+                ),
+              );
+            },
+            child: const Text('ESP32 Pin Dökümünü Gör'),
+          ),
         ),
       ],
     );
   }
 
-  Widget _ayarS(String t, double v, double min, double max, String p) {
+  Widget _ayarS(
+    String t,
+    double v,
+    double min,
+    double max,
+    String p,
+    void Function(double) updateValue, {
+    String unit = '',
+  }) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
           icon: const Icon(Icons.remove),
           onPressed: () {
-            setState(() {});
-            _gonder("set?$p=${(v - 10).toInt()}");
+            final nv = (v - 10).clamp(min, max);
+            setState(() => updateValue(nv));
+            _gonder("set?$p=${nv.toInt()}");
           },
         ),
-        Text('${v.toInt()}'),
+        Text('${v.toInt()}$unit'),
         IconButton(
           icon: const Icon(Icons.add),
           onPressed: () {
-            setState(() {});
-            _gonder("set?$p=${(v + 10).toInt()}");
+            final nv = (v + 10).clamp(min, max);
+            setState(() => updateValue(nv));
+            _gonder("set?$p=${nv.toInt()}");
           },
         ),
       ],
     );
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -600,6 +752,30 @@ class _AnaPanelState extends State<AnaPanel> {
           ),
           BottomNavigationBarItem(icon: Icon(Icons.settings), label: "Ayarlar"),
         ],
+      ),
+    );
+  }
+}
+
+class PinDumpPage extends StatelessWidget {
+  const PinDumpPage({super.key, required this.pinDump});
+  final List<Map<String, String>> pinDump;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('ESP32 Pin Dökümü')),
+      body: ListView(
+        children: pinDump
+            .map(
+              (p) => ListTile(
+                dense: true,
+                title: Text(p['code'] ?? ''),
+                subtitle: Text(p['desc'] ?? ''),
+                trailing: Text(p['pin'] ?? ''),
+              ),
+            )
+            .toList(),
       ),
     );
   }

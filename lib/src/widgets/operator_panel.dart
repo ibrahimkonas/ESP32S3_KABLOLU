@@ -127,10 +127,10 @@ class _OperatorPanelState extends State<OperatorPanel> {
                     widget.onSend('cmd?op=oto');
                   },
                   style: ButtonStyle(
-                    backgroundColor: MaterialStateProperty.all(
+                    backgroundColor: WidgetStateProperty.all(
                       widget.isOto ? Colors.green : Colors.grey,
                     ),
-                    foregroundColor: MaterialStateProperty.all(Colors.white),
+                    foregroundColor: WidgetStateProperty.all(Colors.white),
                   ),
                   child: const Text('Otomatik'),
                 ),
@@ -143,10 +143,10 @@ class _OperatorPanelState extends State<OperatorPanel> {
                     widget.onSend('cmd?op=man');
                   },
                   style: ButtonStyle(
-                    backgroundColor: MaterialStateProperty.all(
+                    backgroundColor: WidgetStateProperty.all(
                       !widget.isOto ? Colors.green : Colors.grey,
                     ),
-                    foregroundColor: MaterialStateProperty.all(Colors.white),
+                    foregroundColor: WidgetStateProperty.all(Colors.white),
                   ),
                   child: const Text('Manuel'),
                 ),
@@ -215,7 +215,8 @@ class _OperatorPanelState extends State<OperatorPanel> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            Icon(ok ? Icons.check_circle : Icons.error, color: ok ? Colors.green : Colors.orange, size: 32),
+            Icon(ok ? Icons.check_circle : Icons.error,
+                color: ok ? Colors.green : Colors.orange, size: 32),
             const SizedBox(height: 8),
             Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
           ],
@@ -224,16 +225,19 @@ class _OperatorPanelState extends State<OperatorPanel> {
     );
   }
 
-
-
   // HOME YAPILAMADI ve hazır durumu
   Widget _homeBanner(bool isError, String durum, VoidCallback onReset) {
     return Card(
       color: isError ? Colors.red : Colors.green,
       child: ListTile(
-        title: Text(isError ? 'HOME YAPILAMADI' : 'HAZIR', style: const TextStyle(color: Colors.white)),
-        subtitle: isError ? Text('HAZIR', style: TextStyle(color: Colors.white70)) : null,
-        trailing: isError ? ElevatedButton(onPressed: onReset, child: const Text('RESET')) : null,
+        title: Text(isError ? 'HOME YAPILAMADI' : 'HAZIR',
+            style: const TextStyle(color: Colors.white)),
+        subtitle: isError
+            ? Text('HAZIR', style: TextStyle(color: Colors.white70))
+            : null,
+        trailing: isError
+            ? ElevatedButton(onPressed: onReset, child: const Text('RESET'))
+            : null,
       ),
     );
   }
