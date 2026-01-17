@@ -1,0 +1,22 @@
+name: serigrafi_mapp_clean
+publish_to: 'none'
+description: Temizlenmiş serigrafi_mapp Flutter projesi
+version: 1.0.0+1
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^0.13.5
+  multicast_dns: ^0.3.2
+  syncfusion_flutter_gauges: ^20.2.48
+  shared_preferences: ^2.0.15
+  path_provider: ^2.1.1
+  cupertino_icons: ^1.0.2
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
