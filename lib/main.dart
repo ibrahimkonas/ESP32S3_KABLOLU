@@ -2,11 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:multicast_dns/multicast_dns.dart';
 import 'src/widgets/operator_panel.dart';
 import 'src/widgets/reports_page.dart';
 import 'src/models/machine_event.dart';
-import 'src/widgets/technician_menu_extra.dart';
+import 'src/widgets/pin_dump_page.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() => runApp(const SgmProHmi());
 
@@ -33,12 +37,20 @@ class AnaPanel extends StatefulWidget {
 class _AnaPanelState extends State<AnaPanel> {
   bool _pressureOk = true;
   bool _vacuumOk = true;
-  final String ip = "192.168.4.1";
+  static const String _mdnsHost = 'serigrafi.local';
+  String? _resolvedIp;
+  bool _isResolvingMdns = false;
+  String _mdnsError = '';
+  String _customHost = '';
+  final TextEditingController _hostController = TextEditingController();
   Timer? _pollTimer;
   String _password = '1234';
   int _sayfaIndex = 0;
   List<ProductionReport> _reports = [];
   List<MachineEvent> _events = [];
+  int _dailyTotal = 0;
+  int _lastDeviceCount = 0;
+  DateTime? _lastReportDay;
   int sayac = 0;
   int _targetProduction = 0;
   bool _targetReached = false;
@@ -65,7 +77,8 @@ class _AnaPanelState extends State<AnaPanel> {
       bant = 1000,
       anaP = 500,
       ragP = 400,
-      xBand = 0;
+      xBand = 0,
+      _xLimitMs = 2000;
   bool isOnline = false, isOto = true;
   String durum = "BEKLENIYOR";
   String _errorMessage = '';
@@ -73,21 +86,105 @@ class _AnaPanelState extends State<AnaPanel> {
   @override
   void initState() {
     super.initState();
+    _resolveMdnsHost();
     _pollTimer = Timer.periodic(
       const Duration(seconds: 1),
       (t) => _verileriGetir(),
     );
     _loadPassword();
+    _loadCustomHost();
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _hostController.dispose();
     super.dispose();
   }
 
-  Future<http.Response> _gonder(String path) =>
-      http.get(Uri.parse('http://$ip/$path'));
+  String get _baseHost =>
+      _customHost.isNotEmpty ? _customHost : (_resolvedIp ?? _mdnsHost);
+
+  Uri _buildUri(String path) => Uri.parse('http://$_baseHost/$path');
+
+  Future<http.Response> _gonder(String path) => http.get(_buildUri(path));
+
+  Future<void> _resolveMdnsHost() async {
+    if (_customHost.isNotEmpty) return; // manuel host varsa mDNS deneme
+    if (_isResolvingMdns) return;
+    setState(() {
+      _isResolvingMdns = true;
+      _mdnsError = '';
+    });
+    final client = MDnsClient();
+    try {
+      await client.start();
+      final stream = client.lookup<IPAddressResourceRecord>(
+        ResourceRecordQuery.addressIPv4(_mdnsHost),
+      );
+      await for (final record in stream.timeout(const Duration(seconds: 3))) {
+        final addr = record.address.address;
+        if (addr.isNotEmpty) {
+          if (mounted) setState(() => _resolvedIp = addr);
+          break;
+        }
+      }
+    } catch (_) {
+      // mDNS çözümleme hataları sessiz geçilir; HTTP isteği başarısız olursa tekrar denenecek
+      if (mounted) setState(() => _mdnsError = 'mDNS çözümleme başarısız');
+    } finally {
+      client.stop();
+      if (mounted) setState(() => _isResolvingMdns = false);
+    }
+  }
+
+  Future<void> _loadCustomHost() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('custom_host') ?? '';
+    if (saved.isNotEmpty) {
+      setState(() {
+        _customHost = saved;
+        _hostController.text = saved;
+      });
+    }
+  }
+
+  String _normalizeHost(String value) {
+    var v = value.trim();
+    if (v.startsWith('http://')) v = v.substring(7);
+    if (v.startsWith('https://')) v = v.substring(8);
+    while (v.endsWith('/')) {
+      v = v.substring(0, v.length - 1);
+    }
+    return v;
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  Future<void> _saveCustomHost(String value) async {
+    final clean = _normalizeHost(value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('custom_host', clean);
+    setState(() {
+      _customHost = clean;
+      if (clean.isEmpty) {
+        _mdnsError = '';
+      }
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(clean.isEmpty
+                ? 'Manuel host temizlendi'
+                : 'Manuel host kaydedildi: $clean')),
+      );
+    }
+    if (clean.isEmpty) {
+      // mDNS moduna dön: mevcut çözümü koru, yoksa yeniden dene
+      _resolveMdnsHost();
+    }
+  }
 
   Future<void> _handleSend(String path) async {
     // Start komutu öncesinde hedef değiştiyse sayaç sıfırlamayı dene
@@ -128,64 +225,86 @@ class _AnaPanelState extends State<AnaPanel> {
   Future<void> _verileriGetir() async {
     try {
       final res = await http
-          .get(Uri.parse('http://$ip/status'))
+          .get(_buildUri('status'))
           .timeout(const Duration(milliseconds: 900));
       if (res.statusCode == 200) {
         final d = jsonDecode(res.body);
         setState(() {
-          void _addReport(int count) {
-            final now = DateTime.now();
-            _reports.add(ProductionReport(count: count, time: now));
-            _reports = _reports
-                .where(
-                  (r) =>
-                      r.time.day == now.day &&
-                      r.time.month == now.month &&
-                      r.time.year == now.year,
-                )
-                .toList();
+          final now = DateTime.now();
+          final deviceCounter = d['sayac'] ?? 0;
+          final sameDayAsLast =
+              _lastReportDay != null && _isSameDay(now, _lastReportDay!);
+
+          if (!sameDayAsLast) {
+            _reports.clear();
+            _events = _events.where((e) => _isSameDay(e.time, now)).toList();
+            _dailyTotal = 0;
+            _lastDeviceCount = deviceCounter;
           }
+          _lastReportDay = now;
+
+          int increment = 0;
+          if (deviceCounter > _lastDeviceCount) {
+            increment = deviceCounter - _lastDeviceCount;
+          }
+
+          if (increment > 0) {
+            _dailyTotal += increment;
+            _reports.add(ProductionReport(count: _dailyTotal, time: now));
+          }
+          _lastDeviceCount = deviceCounter;
 
           if (_targetProduction > 0) {
             if (_targetReached) {
               sayac = _targetProduction;
-            } else if (d['sayac'] == 0) {
-              sayac = 0;
-            } else if (d['sayac'] > 0 && sayac == 0) {
-              sayac = 1;
-              _addReport(1);
-            } else if (d['sayac'] > 0 && sayac > 0) {
-              if (d['sayac'] > sayac) {
-                for (int i = sayac + 1; i <= d['sayac']; i++) {
-                  _addReport(i);
-                }
-              }
-              sayac = d['sayac'];
+            } else {
+              sayac = deviceCounter;
             }
           } else {
-            sayac = d['sayac'] ?? 0;
+            sayac = deviceCounter;
           }
-            hiz = (d['hiz'] ?? 850).toDouble();
-            bant = (d['bant'] ?? 1000).toDouble();
-            anaP = (d['anaP'] ?? 500).toDouble();
-            ragP = (d['ragP'] ?? 400).toDouble();
-            xBand = (d['xBand'] ?? d['xb'] ?? xBand).toDouble();
+          hiz = (d['hiz'] ?? 850).toDouble();
+          bant = (d['bant'] ?? 1000).toDouble();
+          anaP = (d['anaP'] ?? 500).toDouble();
+          ragP = (d['ragP'] ?? 400).toDouble();
+          xBand = (d['xBand'] ?? d['xb'] ?? xBand).toDouble();
+          _xLimitMs = (d['xlim'] ?? _xLimitMs).toDouble();
           durum = d['durum'] ?? "HAZIR";
-          isOto = d['isOto'] ?? true;
-          basinc = ((d['basinc'] ?? 0) / 4095) * 10;
-          vakum = ((d['vakum'] ?? 0) / 4095) * 10;
+          // isOto: Önce API alanına bak; yoksa durum metninden AUTO içeriyorsa otomatik kabul et
+          if (d.containsKey('isOto')) {
+            final v = d['isOto'];
+            isOto = (v == true || v == 1);
+          } else {
+            final durumStr = (d['durum'] ?? '').toString().toUpperCase();
+            isOto = durumStr.contains('AUTO');
+          }
+          final basincRaw = d['basinc'];
+          final vakumRaw = d['vakum'];
+          final basincValid = basincRaw != null;
+          final vakumValid = vakumRaw != null;
+          if (basincValid) basinc = ((basincRaw) / 4095) * 10;
+          if (vakumValid) vakum = ((vakumRaw) / 4095) * 10;
           isOnline = true;
-          _pressureOk = (d['pressure'] ?? 1) == 1;
-          _vacuumOk = (d['vacuum'] ?? 1) == 1;
+          // Dijital bayraklar için 3.3V = aktif (1/true). Yoksa pasif kabul et.
+          final pressureFlag = d['pressure'];
+          final vacuumFlag = d['vacuum'];
+          _pressureOk = pressureFlag == 1 || pressureFlag == true;
+          _vacuumOk = vacuumFlag == 1 || vacuumFlag == true;
           String? detectedError;
           String sensorCode = '';
           if (d['error_msg'] != null && (d['error_msg'] as String).isNotEmpty) {
             detectedError = (d['error_msg'] as String).toUpperCase();
           } else {
-            if (basinc < 2.0) {
+            if (!_pressureOk && isOnline) {
               detectedError = 'HAVA BASINCI YOK';
               sensorCode = 'HBK_SENSOR (GPIO6)';
-            } else if (vakum < 1.5) {
+            } else if (!_vacuumOk && isOnline) {
+              detectedError = 'VAKUM DÜŞÜK';
+              sensorCode = 'VK_SENSOR (GPIO4)';
+            } else if (basincValid && basinc < 2.0 && isOnline) {
+              detectedError = 'HAVA BASINCI YOK';
+              sensorCode = 'HBK_SENSOR (GPIO6)';
+            } else if (vakumValid && vakum < 1.5 && isOnline) {
               detectedError = 'VAKUM DÜŞÜK';
               sensorCode = 'VK_SENSOR (GPIO4)';
             } else if ((d['durum'] ?? '').toString().toLowerCase().contains(
@@ -198,6 +317,8 @@ class _AnaPanelState extends State<AnaPanel> {
                 )) {
               detectedError = 'RAGLE PİSTON YERİNE ULAŞMADI';
               sensorCode = 'RPS (GPIO10/11)';
+            } else if ((d['durum'] ?? '').toString().toUpperCase().contains('FAULT')) {
+              detectedError = 'MAKİNE FAULT MODUNDA';
             }
           }
           if (detectedError != null && detectedError.isNotEmpty) {
@@ -216,6 +337,8 @@ class _AnaPanelState extends State<AnaPanel> {
                 ),
               );
             }
+          } else {
+            _errorMessage = '';
           }
         });
         if (mounted) {
@@ -257,7 +380,10 @@ class _AnaPanelState extends State<AnaPanel> {
         }
       }
     } catch (e) {
-      if (mounted) setState(() => isOnline = false);
+      if (mounted) {
+        setState(() => isOnline = false);
+        _resolveMdnsHost();
+      }
     }
   }
 
@@ -380,6 +506,7 @@ class _AnaPanelState extends State<AnaPanel> {
       'ap': anaP.toInt(),
       'rp': ragP.toInt(),
       'xb': xBand.toInt(),
+      'xlim': _xLimitMs.toInt(),
     };
     final query = params.entries.map((e) => '${e.key}=${e.value}').join('&');
     try {
@@ -456,6 +583,8 @@ class _AnaPanelState extends State<AnaPanel> {
         content: TextField(
           controller: c,
           obscureText: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
           decoration: const InputDecoration(labelText: 'Şifre'),
         ),
         actions: [
@@ -486,19 +615,42 @@ class _AnaPanelState extends State<AnaPanel> {
         '${e.type == 'ariza' ? 'Arıza' : 'Duruş'};${e.reason};${e.timeString}',
       );
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rapor Dışa Aktar'),
-        content: SingleChildScrollView(child: Text(buffer.toString())),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Kapat'),
+    final now = DateTime.now();
+    final stamp =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/serigrafi_report_$stamp.csv');
+      await file.writeAsString(buffer.toString(), flush: true);
+      if (!mounted) return;
+      await Clipboard.setData(ClipboardData(text: buffer.toString()));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text('CSV kaydedildi: ${file.path} (panoya kopyalandı)')),
+      );
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Rapor Dışa Aktar'),
+          content: SingleChildScrollView(
+            child: Text(
+                'Kaydedildi:\n${file.path}\n\nCSV panoya kopyalandı. İsterseniz e-posta/WhatsApp ile yapıştırabilirsiniz.'),
           ),
-        ],
-      ),
-    );
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Kapat'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Dışa aktarım başarısız: $e')),
+      );
+    }
   }
 
   Widget _operatorBody() {
@@ -510,11 +662,44 @@ class _AnaPanelState extends State<AnaPanel> {
         !durum.toLowerCase().contains('hazir')) {
       errors.add('HOME YAPILAMADI');
     }
+    if (durum.toUpperCase().contains('FAULT')) {
+      errors.add('MAKİNE FAULT MODUNDA');
+    }
     // Kaydırılabilir yapı ile küçük ekranlarda taşmayı engelle
     return ListView(
       padding: EdgeInsets.zero,
       children: [
         _uyariBanner(),
+        if (!isOto)
+          Container(
+            width: double.infinity,
+            color: Colors.amber,
+            padding: const EdgeInsets.all(12),
+            child: const Text(
+              'MAKİNE MANUEL SEÇİM YAPILDI',
+              style: TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (isOto)
+          Container(
+            width: double.infinity,
+            color: Colors.amber,
+            padding: const EdgeInsets.all(12),
+            child: const Text(
+              'MAKİNE OTOMATİK ÇALIŞIYOR',
+              style: TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
         if (_errorMessage.isNotEmpty)
           Padding(
             padding: const EdgeInsets.all(12),
@@ -533,7 +718,10 @@ class _AnaPanelState extends State<AnaPanel> {
           isOto: isOto,
           durum: durum,
           isOnline: isOnline,
+          pressureOk: _pressureOk,
+          vacuumOk: _vacuumOk,
           errors: errors,
+          dailyTotal: _dailyTotal,
           onReset: _resetError,
           onSend: (p) => _handleSend(p),
           target: _targetProduction,
@@ -568,6 +756,8 @@ class _AnaPanelState extends State<AnaPanel> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _ipInfoCard(),
+        const SizedBox(height: 8),
         ListTile(
           title: const Text('Bant Süresi'),
           subtitle: Column(
@@ -607,6 +797,25 @@ class _AnaPanelState extends State<AnaPanel> {
           ),
         ),
         ListTile(
+          title: const Text('X Limit Zaman Aşımı'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              SizedBox(height: 4),
+              Text('Min 500 ms - Max 5000 ms'),
+            ],
+          ),
+          trailing: _ayarS(
+            'X Limit Timeout',
+            _xLimitMs,
+            500,
+            5000,
+            'xlim',
+            (nv) => _xLimitMs = nv,
+            unit: ' ms',
+          ),
+        ),
+        ListTile(
           title: const Text('Ana Piston Süresi'),
           subtitle: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -615,8 +824,7 @@ class _AnaPanelState extends State<AnaPanel> {
               Text('Min 100 ms - Max 5000 ms'),
             ],
           ),
-          trailing:
-              _ayarS(
+          trailing: _ayarS(
             'Ana Piston Suresi',
             anaP,
             100,
@@ -653,6 +861,30 @@ class _AnaPanelState extends State<AnaPanel> {
           ),
         ),
         const Divider(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: ElevatedButton(
+            onPressed: () {
+              final host = _baseHost.trim();
+              if (host.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content: Text('Önce geçerli bir host/IP girin')),
+                );
+                return;
+              }
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => PinDumpPage(deviceIp: host),
+                ),
+              );
+            },
+            child: const Text('ESP32 Pin Dökümünü Gör'),
+          ),
+        ),
+        const Divider(),
+        _hostConfigCard(),
+        const Divider(),
         ListTile(
           title: const Text('Şifre Değiştir'),
           trailing: ElevatedButton(
@@ -661,20 +893,85 @@ class _AnaPanelState extends State<AnaPanel> {
           ),
         ),
         const Divider(),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => PinDumpPage(pinDump: _pinDump),
-                ),
-              );
-            },
-            child: const Text('ESP32 Pin Dökümünü Gör'),
-          ),
-        ),
       ],
+    );
+  }
+
+  Widget _ipInfoCard() {
+    final ipText = _resolvedIp ?? 'Çözülmedi';
+    final usingManual = _customHost.isNotEmpty;
+    final activeHost = _baseHost;
+    return Card(
+      child: ListTile(
+        title: const Text('Bağlantı Adresi'),
+        subtitle: Text(
+          usingManual
+              ? 'Manuel host: $activeHost\n(Not: mDNS kullanılmıyor)'
+              : 'Host (mDNS): $_mdnsHost\nÇözülen IP: $ipText${_mdnsError.isNotEmpty ? '\nHata: $_mdnsError' : ''}',
+        ),
+        trailing: IconButton(
+          icon: Icon(_isResolvingMdns ? Icons.hourglass_empty : Icons.refresh),
+          onPressed:
+              (_isResolvingMdns || usingManual) ? null : _resolveMdnsHost,
+        ),
+      ),
+    );
+  }
+
+  Widget _hostConfigCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Manuel IP/Host',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _hostController,
+              decoration: const InputDecoration(
+                labelText: 'Örn: 192.168.137.205 veya serigrafi.local',
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () {
+                    _hostController.clear();
+                    _saveCustomHost('');
+                  },
+                  child: const Text('Temizle'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () => _saveCustomHost(_hostController.text),
+                  child: const Text('Kaydet'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text('Kullanılan adres: $_baseHost'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _remoteControlInfo() {
+    return const SizedBox.shrink();
+  }
+
+  Widget _chip(String label, Color color) {
+    return Chip(
+      backgroundColor: color,
+      label: Text(
+        label,
+        style:
+            const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+      ),
     );
   }
 
@@ -710,6 +1007,7 @@ class _AnaPanelState extends State<AnaPanel> {
       ],
     );
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -752,30 +1050,6 @@ class _AnaPanelState extends State<AnaPanel> {
           ),
           BottomNavigationBarItem(icon: Icon(Icons.settings), label: "Ayarlar"),
         ],
-      ),
-    );
-  }
-}
-
-class PinDumpPage extends StatelessWidget {
-  const PinDumpPage({super.key, required this.pinDump});
-  final List<Map<String, String>> pinDump;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('ESP32 Pin Dökümü')),
-      body: ListView(
-        children: pinDump
-            .map(
-              (p) => ListTile(
-                dense: true,
-                title: Text(p['code'] ?? ''),
-                subtitle: Text(p['desc'] ?? ''),
-                trailing: Text(p['pin'] ?? ''),
-              ),
-            )
-            .toList(),
       ),
     );
   }

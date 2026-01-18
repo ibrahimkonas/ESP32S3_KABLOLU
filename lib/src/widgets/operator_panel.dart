@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:syncfusion_flutter_gauges/gauges.dart';
 
 class OperatorPanel extends StatefulWidget {
   final int sayac;
@@ -10,7 +9,10 @@ class OperatorPanel extends StatefulWidget {
   final bool isOto;
   final String durum;
   final bool isOnline;
+  final bool pressureOk;
+  final bool vacuumOk;
   final List<String> errors;
+  final int dailyTotal;
   final VoidCallback onReset;
   final int target;
   final void Function(int) onSetTarget;
@@ -26,7 +28,10 @@ class OperatorPanel extends StatefulWidget {
     required this.isOto,
     required this.durum,
     required this.isOnline,
+    required this.pressureOk,
+    required this.vacuumOk,
     required this.errors,
+    required this.dailyTotal,
     required this.onReset,
     required this.onSend,
     required this.target,
@@ -62,225 +67,393 @@ class _OperatorPanelState extends State<OperatorPanel> {
     super.dispose();
   }
 
-  Widget _saat(String t, double v, Color c) => Container(
-      height: 160,
-      child: SfRadialGauge(
-        axes: [
-          RadialAxis(
-            minimum: 0,
-            maximum: 10,
-            ranges: [
-              GaugeRange(startValue: 0, endValue: 2, color: Colors.red),
-              GaugeRange(startValue: 2, endValue: 8, color: Colors.green),
-              GaugeRange(startValue: 8, endValue: 10, color: Colors.orange),
-            ],
-            pointers: [
-              NeedlePointer(value: v),
-            ],
-            annotations: [
-              GaugeAnnotation(
-                widget: Text('$t\n${v.toStringAsFixed(2)}',
-                    textAlign: TextAlign.center),
-                angle: 90,
-                positionFactor: 0.7,
-              ),
-            ],
-          ),
-        ],
-      ));
-
   @override
   Widget build(BuildContext context) {
-    // Türkçe açıklamalar ile istenen operator paneli
+    final bool hasError = widget.errors.isNotEmpty;
+    const Color panelTop = Color(0xFF0D1117);
+    const Color panelMid = Color(0xFF121826);
+    const Color accent = Color(0xFF4CC2FF);
+
+    return SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [panelTop, panelMid],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _statusHeader(hasError, accent),
+              const SizedBox(height: 12),
+              _metricGrid(accent),
+              const SizedBox(height: 12),
+              _pressureVacuumRow(),
+              const SizedBox(height: 12),
+              _speedPanel(),
+              const SizedBox(height: 12),
+              _targetInput(),
+              const SizedBox(height: 12),
+              _alarmList(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _statusHeader(bool hasError, Color accent) {
+    final Color banner = hasError ? Colors.red.shade700 : Colors.green.shade600;
+    final String title = hasError ? 'SERVİS STOP' : 'MAKİNE HAZIR';
+    final String subtitle = widget.durum;
+    final bool online = widget.isOnline;
     return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        gradient: LinearGradient(
+          colors: [banner.withOpacity(0.9), banner.withOpacity(0.7)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
       padding: const EdgeInsets.all(16),
-      child: Column(
+      child: Row(
         children: [
-          Row(
-            children: [
-              Expanded(child: _anaKart('Sayaç', widget.sayac.toString())),
-              const SizedBox(width: 10),
-              Expanded(child: _durumIcon('Basınç', widget.basinc >= 5)),
-              const SizedBox(width: 10),
-              Expanded(child: _durumIcon('Vakum', widget.vakum >= 5)),
-            ],
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.15),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              hasError ? Icons.warning_amber_rounded : Icons.check_circle,
+              color: Colors.white,
+              size: 30,
+            ),
           ),
-          const SizedBox(height: 16),
-          _homeBanner(widget.errors.isNotEmpty, widget.durum, widget.onReset),
-          const SizedBox(height: 8),
-          _durusSebebi(widget.errors.isNotEmpty ? widget.errors.first : ''),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(child: _anaKart('Hız', widget.hiz.toStringAsFixed(0))),
-              const SizedBox(width: 10),
-              Expanded(child: _anaKart('Bant', widget.bant.toStringAsFixed(0))),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () {
-                    if (widget.isOto) return; // zaten aktifse gönderme
-                    widget.onSend('cmd?op=oto');
-                  },
-                  style: ButtonStyle(
-                    backgroundColor: WidgetStateProperty.all(
-                      widget.isOto ? Colors.green : Colors.grey,
-                    ),
-                    foregroundColor: WidgetStateProperty.all(Colors.white),
-                  ),
-                  child: const Text('Otomatik'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () {
-                    if (!widget.isOto) return; // zaten aktifse gönderme
-                    widget.onSend('cmd?op=man');
-                  },
-                  style: ButtonStyle(
-                    backgroundColor: WidgetStateProperty.all(
-                      !widget.isOto ? Colors.green : Colors.grey,
-                    ),
-                    foregroundColor: WidgetStateProperty.all(Colors.white),
-                  ),
-                  child: const Text('Manuel'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => widget.onSend('cmd?op=stop'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red,
-                  ),
-                  child: const Text('DURDUR'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => widget.onSend('cmd?op=start'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                  ),
-                  child: const Text('BAŞLAT'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _targetController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Hedef Üretim',
-                    border: OutlineInputBorder(),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 18,
+                    letterSpacing: 0.2,
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                onPressed: () {
-                  final val = int.tryParse(_targetController.text);
-                  if (val != null) {
-                    widget.onSetTarget(val);
-                  }
-                },
-                child: const Text('Ayarla'),
-              ),
-            ],
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  style: const TextStyle(color: Colors.white70),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
           ),
-          // Spacer kaldırıldı, hata önlendi
+          const SizedBox(width: 10),
+          Chip(
+            backgroundColor: online ? accent : Colors.redAccent,
+            label: Text(
+              online ? 'ONLINE' : 'OFFLINE',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
 
-  // Durum ikonları (yeşil tik veya sarı uyarı)
-  Widget _durumIcon(String label, bool ok) {
+  Widget _metricGrid(Color accent) {
+    final cards = [
+      _metricBlock('Üretim', widget.sayac.toString(), Colors.greenAccent),
+      _metricBlock('Hedef', widget.target.toString(), accent),
+      _metricBlock('Mod', widget.isOto ? 'AUTO' : 'MANUAL', widget.isOto ? Colors.blueAccent : Colors.orange),
+      _metricBlock('Günlük Üretim', widget.dailyTotal.toString(), Colors.greenAccent, small: true),
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < 500;
+        if (isNarrow) {
+          return Column(
+            children: [
+              Row(children: [Expanded(child: cards[0]), const SizedBox(width: 8), Expanded(child: cards[1])]),
+              const SizedBox(height: 8),
+              Row(children: [Expanded(child: cards[2]), const SizedBox(width: 8), Expanded(child: cards[3])]),
+            ],
+          );
+        }
+        return Row(
+          children: cards
+              .map((c) => Expanded(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6), child: c)))
+              .toList(),
+        );
+      },
+    );
+  }
+
+  Widget _metricBlock(String title, String value, Color accent, {bool small = false}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF161C2B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accent.withOpacity(0.35), width: 1.2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.35),
+            blurRadius: 10,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: Colors.white70,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            maxLines: small ? 2 : 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: small ? 18 : 26,
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pressureVacuumRow() {
+    final items = [
+      _ledStatus('Basınç', widget.pressureOk || widget.basinc >= 2.0, widget.basinc, widget.isOnline),
+      _ledStatus('Vakum', widget.vacuumOk || widget.vakum >= 1.5, widget.vakum, widget.isOnline),
+    ];
+    return Row(
+      children: [
+        Expanded(child: items[0]),
+        const SizedBox(width: 10),
+        Expanded(child: items[1]),
+      ],
+    );
+  }
+
+  Widget _speedPanel() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF161C2B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blueGrey.shade800),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: const [
+              Icon(Icons.speed, color: Colors.cyanAccent),
+              SizedBox(width: 8),
+              Text(
+                'Hız & Bant',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _metricCard(
+                  'Makine Hızı',
+                  widget.hiz.toStringAsFixed(0),
+                  Colors.cyanAccent,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _linearGauge(
+                  'Bant Hızı',
+                  widget.bant,
+                  max: 2000,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _targetInput() {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
+        padding: const EdgeInsets.all(12),
+        child: Row(
           children: [
-            Icon(ok ? Icons.check_circle : Icons.error,
-                color: ok ? Colors.green : Colors.orange, size: 32),
-            const SizedBox(height: 8),
-            Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+            Expanded(
+              child: TextField(
+                controller: _targetController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Hedef Üretim'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: () {
+                final val = int.tryParse(_targetController.text);
+                if (val != null) {
+                  widget.onSetTarget(val);
+                }
+              },
+              child: const Text('Ayarla'),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // HOME YAPILAMADI ve hazır durumu
-  Widget _homeBanner(bool isError, String durum, VoidCallback onReset) {
-    return Card(
-      color: isError ? Colors.red : Colors.green,
-      child: ListTile(
-        title: Text(isError ? 'HOME YAPILAMADI' : 'HAZIR',
-            style: const TextStyle(color: Colors.white)),
-        subtitle: isError
-            ? Text('HAZIR', style: TextStyle(color: Colors.white70))
-            : null,
-        trailing: isError
-            ? ElevatedButton(onPressed: onReset, child: const Text('RESET'))
-            : null,
-      ),
-    );
-  }
-
-  // Duruş Sebepleri kutusu
-  Widget _durusSebebi(String sebep) {
-    if (sebep.isEmpty) return SizedBox.shrink();
-    return Card(
-      color: Colors.red.shade900,
-      child: ListTile(
-        leading: Icon(Icons.error, color: Colors.orange),
-        title: Text('Duruş Sebepleri', style: TextStyle(color: Colors.orange)),
-        subtitle: Text(sebep, style: TextStyle(color: Colors.white)),
-      ),
-    );
-  }
-
-  Widget _anaKart(String label, String value) {
+  Widget _alarmList() {
+    if (widget.errors.isEmpty) return const SizedBox.shrink();
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(12),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+            const Text('Uyarılar', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text(value, style: const TextStyle(fontSize: 24)),
+            ...widget.errors.map(
+              (e) => ListTile(
+                dense: true,
+                leading: const Icon(Icons.warning, color: Colors.orange),
+                title: Text(e),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _durumMesaji(String durum, bool isError, VoidCallback onReset) {
-    return Card(
-      color: isError ? Colors.red : Colors.green,
-      child: ListTile(
-        title: Text(durum, style: const TextStyle(color: Colors.white)),
-        trailing: isError
-            ? ElevatedButton(
-                onPressed: onReset,
-                child: const Text('Hata Sıfırla'),
-              )
-            : null,
+  Widget _metricCard(String label, String value, Color color, {bool small = false}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B2334),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white70)),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            maxLines: small ? 2 : 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: small ? 16 : 24, color: Colors.white, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _linearGauge(String title, double value, {double max = 2000}) {
+    final double v = value.clamp(0, max).toDouble();
+    final double pct = (v / max * 100).clamp(0, 100);
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B2334),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blueAccent.withOpacity(0.35)),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('$title (${pct.toStringAsFixed(0)}%)', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white70)),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: v / max,
+              minHeight: 12,
+              backgroundColor: Colors.grey.shade800,
+              valueColor: const AlwaysStoppedAnimation<Color>(Colors.blueAccent),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text('${v.toStringAsFixed(0)} / ${max.toStringAsFixed(0)}', style: const TextStyle(color: Colors.white70)),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(String label, Color color) {
+    return Chip(
+      backgroundColor: color,
+      label: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  Widget _ledStatus(String label, bool ok, double val, bool online) {
+    final bool showOk = ok && online;
+    final Color c = showOk ? Colors.green : Colors.red;
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1B2334),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: c.withOpacity(0.45)),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle, boxShadow: [
+              BoxShadow(color: c.withOpacity(0.5), blurRadius: 12, spreadRadius: 1),
+            ]),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                Text(
+                  showOk ? val.toStringAsFixed(2) : 'YOK',
+                  style: TextStyle(color: showOk ? Colors.white70 : Colors.red.shade200),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
